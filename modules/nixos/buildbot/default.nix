@@ -143,6 +143,10 @@ in
       domain = cfg.domain;
       admins = cfg.admins;
       authBackend = "github";
+      # buildbot-nix manages its own nginx vhost (enableNginx, default true) and
+      # does NO TLS — TLS is terminated upstream by Cloudflare. Tell buildbot the
+      # public endpoint is https so it builds correct OAuth callback / webhook URLs.
+      useHTTPS = true;
 
       # Synthesize the workersFile from the password + local worker config.
       # Avoids the consumer having to format JSON themselves.
@@ -227,20 +231,11 @@ in
       '';
     };
 
-    # nginx reverse proxy: buildbot.casazza.io → 127.0.0.1:8010.
-    # The Cloudflare Tunnel (configured by consumer in nixlab tofu) lands
-    # traffic at this host; nginx terminates it and forwards to buildbot.
-    services.nginx = lib.mkIf (cfg.domain != "localhost") {
-      enable = true;
-      recommendedProxySettings = true;
-      virtualHosts.${cfg.domain} = {
-        locations."/".proxyPass = "http://127.0.0.1:8010";
-        # Allow large webhook payloads.
-        locations."/".extraConfig = ''
-          client_max_body_size 10m;
-        '';
-      };
-    };
+    # nginx is configured by buildbot-nix itself (services.buildbot-nix.master
+    # enableNginx, default true): it creates virtualHosts.${domain} → the
+    # backend port. We must NOT also define that vhost here — two proxyPass
+    # definitions for the same host conflict. TLS is terminated upstream by
+    # Cloudflare (useHTTPS above), so no ACME/forceSSL on this origin.
 
     # Firewall: 80/443 for the public web UI (nginx), 9989 for worker traffic.
     # Master+worker co-located means 9989 is loopback only — but keep it open
