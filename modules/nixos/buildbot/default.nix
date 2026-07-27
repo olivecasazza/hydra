@@ -8,26 +8,14 @@
 # canonical build record-keeper + cachix populator; both share the same
 # remote-builder pool.
 #
-# Activation TODO (secrets — none provisioned yet):
-#   1. Create a GitHub App (Settings → Developer settings → GitHub Apps):
-#        - Permissions: Contents (r), Commit statuses (rw), Webhooks (rw),
-#          Metadata (r), Members (r). Subscribe to push + pull_request.
-#        - Generate a private key (.pem) and an OAuth client secret.
-#        - Install on olivecasazza account; grant access to enrolled repos.
-#   2. Create a GCP service account with artifactregistry.writer on the GAR
-#      repo (e.g. reuse `crosswords-ci` in casazza-identity, or a new one),
-#      and export a JSON key. Provision it via sops on the consumer host.
-#   3. Populate secrets/buildbot.yaml (consumer does this — nixlab owns SOPS):
-#        app_secret_key (.pem), webhook_secret (random), oauth_secret
-#        (App client secret), worker_password (random), gar_sa_key (JSON).
-#   4. Set real numeric appId + oauthId on the consumer invocation
-#      (these are non-secret).
-#   5. Add DNS + Cloudflare Access/tunnel for buildbot.casazza.io → :8010
-#      (consumer handles tunnel/DNS — nixlab tofu/cloudflare).
-#   6. Tag each enrolled repo with the `topic` below (default `nixlab-ci`)
-#      so buildbot auto-discovers it.
+# Auth: defaults to OIDC via Keycloak (which federates GitHub + Google).
+# Can fall back to native GitHub OAuth via authBackend = "github". GitHub
+# App webhook/PR detection is always enabled regardless of auth backend —
+# it drives CI pipeline triggers, not user login.
 #
-# Until secrets exist, leaving `enable = false` keeps eval clean.
+# Remote builders: the `builders` option configures distributed Nix builds
+# to the same builder pool used by Hydra. Builder hosts must run the
+# `services.casazza-hydra.builder.*` modules with matching authorizedKeys.
 {
   lib,
   pkgs,
@@ -41,16 +29,69 @@ in
   options.services.casazza-hydra.buildbot = {
     enable = lib.mkEnableOption "buildbot-nix PR CI + tag→GAR push";
 
+    authBackend = lib.mkOption {
+      type = lib.types.enum [
+        "github"
+        "oidc"
+      ];
+      default = "oidc";
+      description = ''
+        Authentication backend for the buildbot web UI.
+        - "oidc": delegate to Keycloak OIDC (supports GitHub/Google federation)
+        - "github": native GitHub OAuth2
+        GitHub App webhook/PR detection is always enabled regardless.
+      '';
+    };
+
     domain = lib.mkOption {
       type = lib.types.str;
       default = "buildbot.casazza.io";
-      description = "Public URL for buildbot web UI (consumer wires Cloudflare Tunnel → this host:8010)";
+      description = "Public URL for buildbot web UI";
     };
 
     admins = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "olivecasazza" ];
       description = "GitHub usernames granted buildbot admin (login + restart privileges)";
+    };
+
+    oidc = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        default = "Keycloak";
+        description = "Display name for the OIDC provider in buildbot UI";
+      };
+
+      discoveryUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "https://auth.casazza.io/realms/master/.well-known/openid-configuration";
+        description = "OIDC discovery endpoint URL";
+      };
+
+      clientId = lib.mkOption {
+        type = lib.types.str;
+        default = "buildbot";
+        description = "OIDC client ID registered in Keycloak";
+      };
+
+      clientSecretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Path to OIDC client secret file (via SOPS).
+          Required when authBackend = "oidc".
+        '';
+      };
+
+      scope = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [
+          "openid"
+          "email"
+          "profile"
+        ];
+        description = "OIDC scopes to request";
+      };
     };
 
     github = {
@@ -60,19 +101,23 @@ in
       };
 
       oauthId = lib.mkOption {
-        type = lib.types.str;
-        description = "OAuth App client ID (non-secret; pairs with oauthSecretFile)";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          OAuth App client ID (non-secret). Required when authBackend = "github".
+          Unused for OIDC (login goes through Keycloak).
+        '';
       };
 
       topic = lib.mkOption {
         type = lib.types.str;
         default = "nixlab-ci";
-        description = "Repos tagged with this GitHub topic are auto-enrolled (GitHub App must be installed on them)";
+        description = "Repos tagged with this GitHub topic are auto-enrolled";
       };
 
       appSecretKeyFile = lib.mkOption {
         type = lib.types.path;
-        description = "Path to GitHub App private key (.pem) — provisioned via sops by consumer";
+        description = "Path to GitHub App private key (.pem) — provisioned via sops";
       };
 
       webhookSecretFile = lib.mkOption {
@@ -81,8 +126,11 @@ in
       };
 
       oauthSecretFile = lib.mkOption {
-        type = lib.types.path;
-        description = "Path to OAuth App client secret — provisioned via sops";
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Path to OAuth App client secret. Required when authBackend = "github".
+        '';
       };
     };
 
@@ -103,6 +151,67 @@ in
       description = "Cores advertised by the local worker (build parallelism hint)";
     };
 
+    builders = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            hostName = lib.mkOption {
+              type = lib.types.str;
+              description = "Builder hostname or IP (as reachable from this host)";
+            };
+            systems = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ "x86_64-linux" ];
+              description = "Nix systems this builder can build";
+            };
+            maxJobs = lib.mkOption {
+              type = lib.types.ints.unsigned;
+              default = 4;
+              description = "Max concurrent build jobs on this builder";
+            };
+            speedFactor = lib.mkOption {
+              type = lib.types.ints.unsigned;
+              default = 1;
+              description = "Scheduling priority weight (higher = preferred)";
+            };
+            supportedFeatures = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [
+                "big-parallel"
+                "nixos-test"
+              ];
+              description = "Nix system-features supported by this builder";
+            };
+            sshUser = lib.mkOption {
+              type = lib.types.str;
+              default = "hydra-builder";
+              description = "SSH user on the builder host (matches builder module user)";
+            };
+            sshKeyFile = lib.mkOption {
+              type = lib.types.path;
+              description = "SSH private key for authenticating to this builder";
+            };
+            publicHostKey = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = ''
+                SSH public host key for known_hosts verification (e.g.
+                "ssh-ed25519 AAAA..."). When null, consumer must configure
+                known_hosts separately.
+              '';
+            };
+          };
+        }
+      );
+      default = [ ];
+      description = ''
+        Remote builder hosts for distributed Nix builds. Shares the same
+        builder pool as Hydra. Builder hosts must run the
+        `services.casazza-hydra.builder.*` modules with matching
+        `authorizedKeys` for the sshUser specified here.
+      '';
+    };
+
     garPush = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -119,7 +228,7 @@ in
       tagGlob = lib.mkOption {
         type = lib.types.str;
         default = "v*";
-        description = "Branch glob that triggers the GAR push postBuildStep (buildbot-nix effects_branches)";
+        description = "Branch glob that triggers the GAR push postBuildStep";
       };
 
       credentialsFile = lib.mkOption {
@@ -136,20 +245,37 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Buildbot master. Uses the upstream module's options directly — the
-    # consumer imports `buildbot-nix-master` alongside this module.
     services.buildbot-nix.master = {
       enable = true;
       domain = cfg.domain;
       admins = cfg.admins;
-      authBackend = "github";
-      # buildbot-nix manages its own nginx vhost (enableNginx, default true) and
-      # does NO TLS — TLS is terminated upstream by Cloudflare. Tell buildbot the
-      # public endpoint is https so it builds correct OAuth callback / webhook URLs.
+      authBackend = cfg.authBackend;
       useHTTPS = true;
 
+      # GitHub App is always enabled — webhook/PR detection is needed
+      # regardless of how users authenticate to the web UI.
+      github = {
+        enable = true;
+        appId = cfg.github.appId;
+        topic = cfg.github.topic;
+        appSecretKeyFile = cfg.github.appSecretKeyFile;
+        webhookSecretFile = cfg.github.webhookSecretFile;
+        oauthId = cfg.github.oauthId;
+        oauthSecretFile = cfg.github.oauthSecretFile;
+      };
+
+      # OIDC auth (Keycloak) — only wired when authBackend = "oidc".
+      oidc = lib.mkIf (cfg.authBackend == "oidc") {
+        inherit (cfg.oidc)
+          name
+          discoveryUrl
+          clientId
+          scope
+          ;
+        clientSecretFile = cfg.oidc.clientSecretFile;
+      };
+
       # Synthesize the workersFile from the password + local worker config.
-      # Avoids the consumer having to format JSON themselves.
       workersFile = pkgs.writeText "buildbot-workers.json" (
         builtins.toJSON [
           {
@@ -160,19 +286,6 @@ in
         ]
       );
 
-      github = {
-        appId = cfg.github.appId;
-        oauthId = cfg.github.oauthId;
-        topic = cfg.github.topic;
-        appSecretKeyFile = cfg.github.appSecretKeyFile;
-        webhookSecretFile = cfg.github.webhookSecretFile;
-        oauthSecretFile = cfg.github.oauthSecretFile;
-      };
-
-      # postBuildSteps run as plain ShellCommand after each successful
-      # nix build of a flake attribute (not in the sandbox — network OK).
-      # Gated to v* tag builds via the repo's buildbot-nix.toml
-      # (effects_branches = ["v*"]) — see README.md.
       postBuildSteps = lib.optional cfg.garPush.enable {
         name = "push-to-gar";
         environment = {
@@ -181,39 +294,54 @@ in
         command = [
           "${pkgs.skopeo}/bin/skopeo"
           "copy"
-          # buildbot-nix exposes the built outpath as a property.
           "oci-archive:%(prop:outpath)s"
           "docker://${cfg.garPush.repository}:%(prop:branch)s"
         ];
-        # Only fire on tag builds that match the glob. buildbot-nix exposes
-        # the branch as a property; effects_branches in the repo's
-        # buildbot-nix.toml is the source of truth for which branches/refs
-        # run postBuildSteps at all.
         warnOnly = false;
       };
 
-      # Per-repo secret: the GAR SA key, available to the postBuildStep
-      # via %(secret:gar-sa-key)s. Consumer wires the sops secret path.
-      # NOTE: nested under `effects` — upstream option is
-      # services.buildbot-nix.master.effects.perRepoSecretFiles (verified
-      # against nix-community/buildbot-nix master.nix:739).
       effects.perRepoSecretFiles = lib.mkIf cfg.garPush.enable {
         "github:olivecasazza/definitely-not-crosswords" = cfg.garPush.credentialsFile;
       };
     };
 
-    # Local worker — co-located with master on this host. Small fleet; the
-    # heavy lifting happens on remote builders via nix's distributed builds.
+    # Local worker — co-located with master. Heavy lifting goes to remote
+    # builders via nix distributed builds (see builders option above).
     services.buildbot-nix.worker = {
       enable = true;
       workerPasswordFile = cfg.workerPasswordFile;
     };
 
+    # Distributed builds — dispatch to the shared remote-builder pool.
+    # The nix daemon reads /etc/nix/machines (written by nix.buildMachines)
+    # and connects to remote builders via ssh-ng as hydra-builder.
+    nix.distributedBuilds = lib.mkIf (cfg.builders != [ ]) true;
+    nix.buildMachines = map (b: {
+      inherit (b)
+        hostName
+        systems
+        maxJobs
+        speedFactor
+        supportedFeatures
+        sshUser
+        ;
+      sshKey = b.sshKeyFile;
+      mandatoryFeatures = [ ];
+      protocol = "ssh-ng";
+    }) cfg.builders;
+
+    # Host key verification for builder SSH connections.
+    programs.ssh.knownHosts = lib.listToAttrs (
+      lib.imap0 (i: b: {
+        name = "buildbot-builder-${toString i}";
+        value = {
+          hostNames = [ b.hostName ];
+          publicKey = b.publicHostKey;
+        };
+      }) (lib.filter (b: b.publicHostKey != null) cfg.builders)
+    );
+
     # Render the GAR SA key into /run/buildbot-gar/key.json with strict perms.
-    # The postBuildStep reads GOOGLE_APPLICATION_CREDENTIALS from
-    # %(secret:gar-sa-key)s which buildbot-nix maps from perRepoSecretFiles.
-    # This oneshot ensures the secret file is readable by the buildbot user
-    # even if the consumer's sops secret lands at root-only perms.
     systemd.services.buildbot-gar-key = lib.mkIf cfg.garPush.enable {
       description = "Materialize GAR SA key for buildbot-nix postBuildStep";
       wantedBy = [ "multi-user.target" ];
@@ -231,24 +359,13 @@ in
       '';
     };
 
-    # nginx is configured by buildbot-nix itself (services.buildbot-nix.master
-    # enableNginx, default true): it creates virtualHosts.${domain} → the
-    # backend port. We must NOT also define that vhost here — two proxyPass
-    # definitions for the same host conflict. TLS is terminated upstream by
-    # Cloudflare (useHTTPS above), so no ACME/forceSSL on this origin.
-
-    # Firewall: 80/443 for the public web UI (nginx), 9989 for worker traffic.
-    # Master+worker co-located means 9989 is loopback only — but keep it open
-    # in case a future worker lives on another host.
+    # nginx is configured by buildbot-nix itself (enableNginx, default true).
+    # TLS is terminated upstream by Cloudflare (useHTTPS above).
     networking.firewall.allowedTCPPorts = lib.optionals (cfg.domain != "localhost") [
       80
       443
     ];
 
-    # skopeo must be on the worker's PATH for the postBuildStep to find it.
-    # The buildbot-nix worker module already injects the master's PATH; this
-    # ensures the binary is at a known absolute path (the postBuildStep uses
-    # ${pkgs.skopeo}/bin/skopeo explicitly so this is belt-and-suspenders).
     environment.systemPackages = lib.mkIf cfg.garPush.enable [ pkgs.skopeo ];
   };
 }
