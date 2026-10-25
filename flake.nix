@@ -37,10 +37,34 @@
           };
         };
       };
+
+      ci = import ./lib/ci.nix { lib = inputs.nixpkgs.lib; };
+
+      base = lib.mkFlake {
+        # NixOS system modules (global) — empty: consumers import this repo's
+        # modules explicitly per host (buildbot on seir, builders on builder hosts).
+        systems.modules.nixos = [ ];
+      };
+
+      # The helper itself is the canonical projection for this repository's
+      # contract check and Hydra job. packageSystems stays empty because this
+      # infrastructure flake has no package output.
+      ciOutputs = ci.mkOutputs {
+        systems = [ "x86_64-linux" ];
+        packageSystems = [ ];
+        checkSystems = [ "x86_64-linux" ];
+        hydraSystems = [ "x86_64-linux" ];
+        buildFor = system: {
+          checks = base.checks.${system};
+          hydraJobs = {
+            ci-contract = base.checks.${system}.ci-contract;
+          };
+        };
+      };
     in
-    lib.mkFlake {
-      # NixOS system modules (global) — empty: consumers import this repo's
-      # modules explicitly per host (buildbot on seir, builders on builder hosts).
-      systems.modules.nixos = [ ];
+    base
+    // {
+      checks = base.checks // ciOutputs.checks;
+      inherit (ciOutputs) hydraJobs;
     };
 }
