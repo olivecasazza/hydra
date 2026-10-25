@@ -134,6 +134,15 @@ in
       };
     };
 
+    githubProjectsRefreshInterval = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (value: value > 0);
+      default = 12 * 60 * 60;
+      description = ''
+        Interval in seconds between automatic GitHub project discovery refreshes.
+        The default preserves buildbot-nix's upstream 12-hour cadence.
+      '';
+    };
+
     workerPasswordFile = lib.mkOption {
       type = lib.types.path;
       description = "Path to a random worker password — master and worker share this";
@@ -303,6 +312,16 @@ in
       effects.perRepoSecretFiles = lib.mkIf cfg.garPush.enable {
         "github:olivecasazza/definitely-not-crosswords" = cfg.garPush.credentialsFile;
       };
+    };
+    # The upstream NixConfigurator creates the GitHub discovery Periodic with
+    # a fixed 12-hour timer. Append a supported Buildbot configurator so the
+    # consumer can opt into a different cadence while preserving scheduler
+    # names, persistent state, builders, and every public constructor option.
+    services.buildbot-master = {
+      extraImports = lib.mkAfter (builtins.readFile ./github_projects_refresh.py);
+      configurators = lib.mkAfter [
+        "GithubProjectsRefreshConfigurator(${toString cfg.githubProjectsRefreshInterval})"
+      ];
     };
 
     # Local worker — co-located with master. Heavy lifting goes to remote

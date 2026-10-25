@@ -148,6 +148,26 @@ pinning process; this PR intentionally creates no release tag.
 }
 ```
 
+### Buildbot GitHub project discovery cadence
+
+The shared module keeps buildbot-nix's upstream 12-hour discovery interval by
+default. A consumer that needs faster enrollment can opt into a 15-minute
+interval explicitly:
+
+```nix
+services.casazza-hydra.buildbot = {
+  enable = true;
+  githubProjectsRefreshInterval = 15 * 60; # 900 seconds
+};
+```
+
+The shorter cadence is an opt-in rate-budget decision for installations that
+need new topic-matched repositories to appear within minutes. It uses the
+public Buildbot periodic scheduler and preserves its persistent `last_build`
+state, builders, and in-flight work; it does not force a scheduler, bypass
+authentication, delete caches, or require a master restart.
+
+
 ## Architecture
 
 - **Hydra** runs in-cluster (k8s Deployment from `modules/k8s/hydra.nix`). Canonical
