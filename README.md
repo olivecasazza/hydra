@@ -165,7 +165,10 @@ The shorter cadence is an opt-in rate-budget decision for installations that
 need new topic-matched repositories to appear within minutes. It uses the
 public Buildbot periodic scheduler and preserves its persistent `last_build`
 state, builders, and in-flight work; it does not force a scheduler, bypass
-authentication, delete caches, or require a master restart.
+authentication, or delete caches. With the current upstream NixOS service
+defaults, changing the generated master configuration requires one normal
+`buildbot-master` restart at a quiet point; this is not a manual refresh or
+cache workaround.
 
 
 ## Architecture
