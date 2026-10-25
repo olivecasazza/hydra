@@ -315,8 +315,8 @@ in
     };
     # The upstream NixConfigurator creates the GitHub discovery Periodic with
     # a fixed 12-hour timer. Append a supported Buildbot configurator so the
-    # consumer can opt into a different cadence without replacing any of the
-    # generated schedulers or touching persistent scheduler state.
+    # consumer can opt into a different cadence while preserving scheduler
+    # names, persistent state, builders, and every public constructor option.
     services.buildbot-master = {
       extraImports = lib.mkAfter (builtins.readFile ./github_projects_refresh.py);
       configurators = lib.mkAfter [
