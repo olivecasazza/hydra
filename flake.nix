@@ -64,7 +64,7 @@
     in
     base
     // {
-      checks = base.checks // ciOutputs.checks;
+      checks = ciOutputs.checks;
       inherit (ciOutputs) hydraJobs;
     };
 }

@@ -57,12 +57,17 @@ ci.mkOutputs {
 ```
 
 The result has the normal flake shape: `packages.<system>`,
-`checks.<system>`, and `hydraJobs.<system>`. The helper evaluates `buildFor`
-once per system and projects the same derivation values; it does not rebuild
-packages for checks or Hydra. Required selected output sets must be non-empty,
-while `packageSystems = []`, `checkSystems = []`, or `hydraSystems = []` are
-valid for a checks-only or Hydra-only flake. Invalid/duplicate systems and
-missing selected outputs fail during evaluation.
+`checks.<system>`, and `hydraJobs.<system>`. `systems` is the evaluation
+universe; the three `*Systems` lists select which ordinary outputs are
+projected. `buildFor` values for unselected systems remain lazy, so a
+non-buildable or intentionally omitted architecture does not become an
+accidental check. The helper evaluates selected `buildFor` values once and
+projects the same derivation values; it does not rebuild packages for checks or
+Hydra. When `hydraJobs` is omitted for a selected Hydra system, that system's
+`packages` attrset is the fallback. Required selected output sets must be
+non-empty, while `packageSystems = []`, `checkSystems = []`, or
+`hydraSystems = []` are valid for a checks-only or Hydra-only flake.
+Invalid/duplicate systems and missing selected outputs fail during evaluation.
 
 Existing consumers that already depend on the Hydra flake may use the
 convenience export from its `lib` namespace. Consumers that do not need the
