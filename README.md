@@ -76,6 +76,9 @@ Hydra modules should use a pinned `flake = false` source input and import
 does not enroll repositories or configure branch protection; those remain
 operational checks.
 
+The helper's release remains controlled by the repository's normal review and
+pinning process; this PR intentionally creates no release tag.
+
 ## Consumption (nixlab)
 
 ### In-cluster Hydra Deployment
