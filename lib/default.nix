@@ -4,8 +4,10 @@
 { lib, ... }:
 let
   inherit (lib) concatStringsSep;
+  ci = import ./ci.nix { inherit lib; };
 in
 {
+  inherit ci;
   # Format a single machines file line for one builder.
   # Shape mirrors Hydra's queue-runner / nix remote-builder format:
   #   ssh-ng://USER@HOST SYSTEMS SSHKEY MAXJOBS SPEEDFACTOR FEATURES
