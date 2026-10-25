@@ -13,7 +13,7 @@ Consumed as a flake input.
 | `modules/nixos/hydra-server.nix` | NixOS service module for a host running Hydra CI. Declarative project/jobset reconciliation, Cachix push hook, SSH/git setup, evaluator limits, Postgres backup/restore to GCS, GC/optimise timers. Parameterized over builder hosts (no `lib/hosts.nix` import). |
 | `modules/nixos/buildbot.nix` | NixOS service — buildbot-nix PR CI + tag→GAR push postBuildStep. |
 | `modules/nixos/builder-*.nix` | NixOS service — remote-builder host configs per platform (`x86_64-linux`, `aarch64-linux`, `aarch64-darwin`). |
-| `lib/default.nix` | `buildMachinesLine` / `machinesFile` helpers — format the nix remote-builder machines file without importing nixlab's `lib/hosts.nix` (no circular dep). |
+| `lib/default.nix`, `lib/ci.nix` | `buildMachinesLine` / `machinesFile` and the framework-neutral `ci.mkOutputs` helper. The CI helper projects one caller-owned `buildFor` function into ordinary `packages`, `checks`, and `hydraJobs` outputs without constructing or rebuilding derivations. |
 | `secrets/buildbot.yaml.example` | SOPS template documenting the keys the buildbot module expects. The consumer (nixlab) owns the actual encrypted secret. |
 | `systems/` | (reserved) full NixOS configs if this repo ever owns builder hosts directly. Currently empty — nixlab owns the hosts. |
 
@@ -31,6 +31,45 @@ inputs.casazza-hydra.url = "github:olivecasazza/hydra";
 | `nixosModules.buildbot-nix-master`, `nixosModules.buildbot-nix-worker` | Re-exports of upstream buildbot-nix NixOS modules (so consumers don't add buildbot-nix as a separate flake input). |
 | `kubenixModules.hydra` | Kubenix module — in-cluster Hydra Deployment. |
 | `kubenixModules.dashboard` | Kubenix module — Hydra Grafana dashboard CR. |
+
+## Shared CI output helper
+
+`lib/ci.nix` is pure Nix source. It has no Buildbot, Hydra API, GitHub, SSH,
+credential, framework, or network dependency. The caller keeps one derivation
+function and chooses every output system explicitly:
+
+```nix
+ci = import "${inputs.casazza-hydra-src}/lib/ci.nix" {
+  inherit (nixpkgs) lib;
+};
+
+ci.mkOutputs {
+  systems = [ "x86_64-linux" "aarch64-linux" ];
+  packageSystems = [ "x86_64-linux" "aarch64-linux" ];
+  checkSystems = [ "x86_64-linux" ];
+  hydraSystems = [ "x86_64-linux" ];
+  buildFor = system: {
+    packages = { inherit app image; };
+    checks = { inherit app image; };
+    hydraJobs = { inherit app image; };
+  };
+}
+```
+
+The result has the normal flake shape: `packages.<system>`,
+`checks.<system>`, and `hydraJobs.<system>`. The helper evaluates `buildFor`
+once per system and projects the same derivation values; it does not rebuild
+packages for checks or Hydra. Required selected output sets must be non-empty,
+while `packageSystems = []`, `checkSystems = []`, or `hydraSystems = []` are
+valid for a checks-only or Hydra-only flake. Invalid/duplicate systems and
+missing selected outputs fail during evaluation.
+
+Existing consumers that already depend on the Hydra flake may use the
+convenience export from its `lib` namespace. Consumers that do not need the
+Hydra modules should use a pinned `flake = false` source input and import
+`lib/ci.nix` directly, avoiding unrelated Snowfall/Kubenix inputs. The helper
+does not enroll repositories or configure branch protection; those remain
+operational checks.
 
 ## Consumption (nixlab)
 
