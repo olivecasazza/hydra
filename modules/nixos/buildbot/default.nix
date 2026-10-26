@@ -335,7 +335,7 @@ in
       );
       configurators = lib.mkAfter [
         "GithubProjectsRefreshConfigurator(${toString cfg.githubProjectsRefreshInterval})"
-        "PrivateCiDataAuthzConfigurator(${lib.boolToString cfg.protectCiData})"
+        "PrivateCiDataAuthzConfigurator(${if cfg.protectCiData then "True" else "False"})"
       ];
     };
 
