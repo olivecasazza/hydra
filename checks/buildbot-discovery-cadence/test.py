@@ -17,7 +17,12 @@ class PeriodicWithStartup(schedulers.Periodic):
 
 def result_of(deferred):
     values = []
-    deferred.addBoth(lambda value: values.append(value) or value)
+
+    def capture(value):
+        values.append(value)
+        return None
+
+    deferred.addBoth(capture)
     if not values:
         raise AssertionError("expected Deferred to complete synchronously")
     value = values[0]
@@ -167,9 +172,21 @@ def test_private_ci_data_authz(source, private_source):
     assert len(disabled_authz.allowRules) == 1
 
 
+def test_nix_generated_configurator_modes(source, private_source, true_expr, false_expr):
+    configurator_class = load_private_configurator(source, private_source)
+    for expression, expected in ((true_expr, True), (false_expr, False)):
+        namespace = {"PrivateCiDataAuthzConfigurator": configurator_class}
+        configurator = eval(expression, namespace)
+        assert isinstance(configurator, configurator_class)
+        assert configurator.enabled is expected
+
+
 if __name__ == "__main__":
     source = Path(sys.argv[1])
     private_source = Path(sys.argv[2])
+    true_expr = sys.argv[3]
+    false_expr = sys.argv[4]
     test_refresh_reconfiguration_preserves_scheduler_state(source)
     test_refresh_requires_exactly_one_match(source)
     test_private_ci_data_authz(source, private_source)
+    test_nix_generated_configurator_modes(source, private_source, true_expr, false_expr)
