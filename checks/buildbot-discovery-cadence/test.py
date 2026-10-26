@@ -121,9 +121,12 @@ def test_private_ci_data_authz(source, private_source):
     authz = Authz(
         allowRules=[
             util.AnyEndpointMatcher(role="admin", defaultDeny=False),
-            util.AnyControlEndpointMatcher(role="admins"),
+            util.AnyControlEndpointMatcher(role="maintainer"),
         ],
-        roleMatchers=[util.RolesFromUsername(roles=["admin"], usernames=["olivecasazza"])],
+        roleMatchers=[
+            util.RolesFromUsername(roles=["admin"], usernames=["olivecasazza"]),
+            util.RolesFromGroups(groupPrefix=""),
+        ],
     )
     authz.setMaster(object())
     configurator.configure({"www": {"authz": authz}})
@@ -139,6 +142,15 @@ def test_private_ci_data_authz(source, private_source):
             raise AssertionError("non-admin read was allowed")
 
     assert result_of(authz.assertUserAllowed("builds/1", "stop", {}, {"username": "olivecasazza"})) is None
+    maintainer = {"username": "worker", "groups": ["maintainer"]}
+    assert result_of(authz.assertUserAllowed("builds/1", "stop", {}, maintainer)) is None
+    try:
+        result_of(authz.assertUserAllowed("logs/1", "get", {}, maintainer))
+    except Forbidden:
+        pass
+    else:
+        raise AssertionError("non-admin read was allowed for an existing control role")
+
     try:
         result_of(authz.assertUserAllowed("builds/1", "stop", {}, {}))
     except Forbidden:
