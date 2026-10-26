@@ -133,8 +133,8 @@ def test_private_ci_data_authz(source, private_source):
             util.RolesFromGroups(groupPrefix=""),
         ],
     )
-    authz.setMaster(object())
     configurator.configure({"www": {"authz": authz}})
+    authz.setMaster(object())
 
     assert type(authz.allowRules[0]).__name__ == "AnyReadEndpointMatcher"
     assert result_of(authz.assertUserAllowed("logs/1", "get", {}, {"username": "olivecasazza"})) is None

@@ -41,5 +41,4 @@ class PrivateCiDataAuthzConfigurator(ConfiguratorBase):
             )
 
         matcher = AnyReadEndpointMatcher(role="admin", defaultDeny=True)
-        matcher.setAuthz(authz)
         rules.insert(0, matcher)
