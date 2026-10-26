@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from buildbot.plugins import util
+from buildbot.www.authz import Authz, Forbidden
 from buildbot.plugins import schedulers
 from buildbot.test.fake.fakemaster import FakeMaster
 from twisted.python.failure import Failure
@@ -30,6 +32,14 @@ def load_configurator(source):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module.GithubProjectsRefreshConfigurator
+
+def load_private_configurator(source, private_source=None):
+    private_source = Path(private_source or Path(source).with_name("private_ci_data_authz.py"))
+    spec = importlib.util.spec_from_file_location("private_ci_data_authz", private_source)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.PrivateCiDataAuthzConfigurator
 
 
 def scheduler_config(name, builder_names, timer=43_200):
@@ -106,7 +116,60 @@ def test_refresh_requires_exactly_one_match(source):
         raise AssertionError("duplicate discovery schedulers were accepted")
 
 
+def test_private_ci_data_authz(source, private_source):
+    configurator = load_private_configurator(source, private_source)(True)
+    authz = Authz(
+        allowRules=[
+            util.AnyEndpointMatcher(role="admin", defaultDeny=False),
+            util.AnyControlEndpointMatcher(role="maintainer"),
+        ],
+        roleMatchers=[
+            util.RolesFromUsername(roles=["admin"], usernames=["olivecasazza"]),
+            util.RolesFromGroups(groupPrefix=""),
+        ],
+    )
+    authz.setMaster(object())
+    configurator.configure({"www": {"authz": authz}})
+
+    assert type(authz.allowRules[0]).__name__ == "AnyReadEndpointMatcher"
+    assert result_of(authz.assertUserAllowed("logs/1", "get", {}, {"username": "olivecasazza"})) is None
+    for user in ({}, {"username": "other"}):
+        try:
+            result_of(authz.assertUserAllowed("logs/1", "get", {}, user))
+        except Forbidden:
+            pass
+        else:
+            raise AssertionError("non-admin read was allowed")
+
+    assert result_of(authz.assertUserAllowed("builds/1", "stop", {}, {"username": "olivecasazza"})) is None
+    maintainer = {"username": "worker", "groups": ["maintainer"]}
+    assert result_of(authz.assertUserAllowed("builds/1", "stop", {}, maintainer)) is None
+    try:
+        result_of(authz.assertUserAllowed("logs/1", "get", {}, maintainer))
+    except Forbidden:
+        pass
+    else:
+        raise AssertionError("non-admin read was allowed for an existing control role")
+
+    try:
+        result_of(authz.assertUserAllowed("builds/1", "stop", {}, {}))
+    except Forbidden:
+        pass
+    else:
+        raise AssertionError("anonymous control action was allowed")
+
+    disabled_authz = Authz(
+        allowRules=[util.AnyEndpointMatcher(role="admin", defaultDeny=False)],
+        roleMatchers=[util.RolesFromUsername(roles=["admin"], usernames=["olivecasazza"])],
+    )
+    disabled_authz.setMaster(object())
+    load_private_configurator(source, private_source)(False).configure({"www": {"authz": disabled_authz}})
+    assert len(disabled_authz.allowRules) == 1
+
+
 if __name__ == "__main__":
     source = Path(sys.argv[1])
+    private_source = Path(sys.argv[2])
     test_refresh_reconfiguration_preserves_scheduler_state(source)
     test_refresh_requires_exactly_one_match(source)
+    test_private_ci_data_authz(source, private_source)

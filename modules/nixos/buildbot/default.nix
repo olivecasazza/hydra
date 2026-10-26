@@ -55,6 +55,16 @@ in
       description = "GitHub usernames granted buildbot admin (login + restart privileges)";
     };
 
+    protectCiData = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Require the configured admin role for all Buildbot REST and WebSocket
+        data, including logs and build metadata. GitHub webhook delivery remains
+        authenticated by its existing signed secret.
+      '';
+    };
+
     oidc = {
       name = lib.mkOption {
         type = lib.types.str;
@@ -318,9 +328,14 @@ in
     # consumer can opt into a different cadence while preserving scheduler
     # names, persistent state, builders, and every public constructor option.
     services.buildbot-master = {
-      extraImports = lib.mkAfter (builtins.readFile ./github_projects_refresh.py);
+      extraImports = lib.mkAfter (
+        (builtins.readFile ./github_projects_refresh.py)
+        + "\n"
+        + (builtins.readFile ./private_ci_data_authz.py)
+      );
       configurators = lib.mkAfter [
         "GithubProjectsRefreshConfigurator(${toString cfg.githubProjectsRefreshInterval})"
+        "PrivateCiDataAuthzConfigurator(${lib.boolToString cfg.protectCiData})"
       ];
     };
 

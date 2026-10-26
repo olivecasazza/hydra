@@ -11,6 +11,6 @@ pkgs.runCommand "buildbot-discovery-cadence" {
   nativeBuildInputs = [ python ];
   PYTHONPATH = pythonPath;
 } ''
-  ${python}/bin/python ${./test.py} ${../../modules/nixos/buildbot/github_projects_refresh.py}
+  ${python}/bin/python ${./test.py} ${../../modules/nixos/buildbot/github_projects_refresh.py} ${../../modules/nixos/buildbot/private_ci_data_authz.py}
   touch "$out"
 ''
